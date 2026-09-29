@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Snake Garden - 手機版貪吃蛇</title>
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      margin: 0; min-height: 100vh; font-family: system-ui, -apple-system, "Noto Sans TC", sans-serif;
+      background: #f3f7ef; color: #294334; display: flex; justify-content: center; padding: 18px 12px 30px;
+    }
+    .app { width: min(100%, 430px); }
+    header { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+    h1 { font-size: 21px; margin:0; }
+    .sub { font-size:12px; color:#6d7d71; margin-top:2px; }
+    .stats { display:flex; gap:7px; }
+    .stat { background:#fff; border:1px solid #dfe8db; border-radius:14px; padding:8px 10px; font-size:12px; white-space:nowrap; }
+    .board-wrap { position:relative; background:#fff; border:1px solid #dce6d8; border-radius:25px; padding:8px; overflow:hidden; touch-action:none; }
+    canvas { display:block; width:100%; aspect-ratio:1/1; border-radius:18px; background:#edf5e8; }
+    .overlay {
+      position:absolute; inset:8px; border-radius:18px; background:rgba(22,35,26,.68); color:white;
+      display:none; align-items:center; justify-content:center; text-align:center; padding:20px;
+    }
+    .overlay.show { display:flex; }
+    .overlay h2 { margin:0 0 7px; font-size:26px; }
+    .overlay p { margin:0; opacity:.9; }
+    .info { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:11px 0; font-size:13px; }
+    .buttons { display:flex; gap:7px; }
+    button {
+      min-height:46px; border:1px solid #d8e3d4; background:white; color:#294334;
+      border-radius:14px; padding:0 13px; font-size:14px; font-weight:700; cursor:pointer;
+    }
+    button:active { transform:scale(.96); }
+    .primary { background:#dcebd6; }
+    .pad { width:245px; margin:14px auto 0; display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+    .pad button { height:61px; font-size:24px; border-radius:18px; }
+    .blank { visibility:hidden; }
+    .tip { margin-top:14px; background:#fff; border:1px solid #dfe8db; border-radius:17px; padding:11px; text-align:center; color:#6d7d71; font-size:12px; line-height:1.6; }
+    .special { color:#b17800; font-weight:800; }
+    @media (max-width:360px) {
+      h1 { font-size:18px; }
+      .stat { padding:7px; }
+      .pad { width:220px; }
+      .info { align-items:flex-start; flex-direction:column; }
+      .buttons { width:100%; }
+      .buttons button { flex:1; }
+    }
+  </style>
+</head>
+<body>
+<main class="app">
+  <header>
+    <div><h1>🐍 Snake Garden</h1><div class="sub">療癒手機版貪吃蛇</div></div>
+    <div class="stats">
+      <div class="stat">分數 <b id="score">0</b></div>
+      <div class="stat">最高 <b id="best">0</b></div>
+    </div>
+  </header>
+
+  <section class="board-wrap" id="swipeArea">
+    <canvas id="board" width="400" height="400" aria-label="貪吃蛇遊戲區"></canvas>
+    <div class="overlay" id="overlay">
+      <div><h2 id="overlayTitle">Game Over</h2><p id="overlayText"></p></div>
+    </div>
+  </section>
+
+  <div class="info">
+    <div>等級 <b id="level">1</b> ・每 5 分加速</div>
+    <div class="buttons">
+      <button id="pause">⏸ 暫停</button>
+      <button id="restart" class="primary">↻ 重玩</button>
+    </div>
+  </div>
+
+  <div class="pad" aria-label="方向控制">
+    <span class="blank"></span><button data-dir="up">▲</button><span class="blank"></span>
+    <button data-dir="left">◀</button><button data-dir="down">▼</button><button data-dir="right">▶</button>
+  </div>
+
+  <div class="tip">
+    📱 可直接在遊戲畫面上下左右滑動<br>
+    🍎 一般蘋果 +1 分　<span class="special">⭐ 金色果實 +3 分</span><br>
+    金色果實會隨機出現，是這版加入的特殊功能。
+  </div>
+</main>
+
+<script>
+(() => {
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
+  const scoreEl = document.getElementById("score");
+  const bestEl = document.getElementById("best");
+  const levelEl = document.getElementById("level");
+  const overlay = document.getElementById("overlay");
+  const overlayTitle = document.getElementById("overlayTitle");
+  const overlayText = document.getElementById("overlayText");
+  const pauseBtn = document.getElementById("pause");
+  const swipeArea = document.getElementById("swipeArea");
+
+  const GRID = 20, CELL = canvas.width / GRID;
+  let snake, food, direction, nextDirection, score, level, timer, paused, gameOver;
+  let best = Number(localStorage.getItem("snakeGardenBest") || 0);
+  let startX = 0, startY = 0;
+
+  function randomEmptyCell() {
+    let p;
+    do {
+      p = { x: Math.floor(Math.random()*GRID), y: Math.floor(Math.random()*GRID) };
+    } while (snake.some(s => s.x === p.x && s.y === p.y));
+    return p;
+  }
+
+  function createFood() {
+    const p = randomEmptyCell();
+    return { ...p, special: Math.random() < 0.18 };
+  }
+
+  function speed() { return Math.max(65, 155 - (level-1)*12); }
+
+  function updateUI() {
+    scoreEl.textContent = score;
+    bestEl.textContent = best;
+    levelEl.textContent = level;
+  }
+
+  function startTimer() {
+    clearInterval(timer);
+    timer = setInterval(step, speed());
+  }
+
+  function reset() {
+    clearInterval(timer);
+    snake = [{x:10,y:10},{x:9,y:10},{x:8,y:10}];
+    direction = {x:1,y:0};
+    nextDirection = {...direction};
+    score = 0; level = 1; paused = false; gameOver = false;
+    food = createFood();
+    pauseBtn.textContent = "⏸ 暫停";
+    overlay.classList.remove("show");
+    updateUI(); draw(); startTimer();
+  }
+
+  function setDirection(x,y) {
+    if (gameOver) return;
+    if (x === -direction.x && y === -direction.y) return;
+    nextDirection = {x,y};
+  }
+
+  function step() {
+    if (paused || gameOver) return;
+    direction = nextDirection;
+    const head = {x:snake[0].x+direction.x, y:snake[0].y+direction.y};
+
+    if (head.x<0 || head.x>=GRID || head.y<0 || head.y>=GRID ||
+        snake.some(s => s.x===head.x && s.y===head.y)) {
+      endGame(); return;
+    }
+
+    snake.unshift(head);
+    if (head.x===food.x && head.y===food.y) {
+      score += food.special ? 3 : 1;
+      if (score > best) {
+        best = score;
+        localStorage.setItem("snakeGardenBest", String(best));
+      }
+      const newLevel = 1 + Math.floor(score/5);
+      if (newLevel !== level) { level = newLevel; startTimer(); }
+      food = createFood();
+      if (navigator.vibrate) navigator.vibrate(food.special ? 40 : 20);
+    } else {
+      snake.pop();
+    }
+    updateUI(); draw();
+  }
+
+  function endGame() {
+    gameOver = true; clearInterval(timer);
+    overlayTitle.textContent = "Game Over 🐍";
+    overlayText.textContent = `你得到 ${score} 分！按「重玩」再挑戰一次。`;
+    overlay.classList.add("show");
+    if (navigator.vibrate) navigator.vibrate([60,40,60]);
+  }
+
+  function togglePause() {
+    if (gameOver) return;
+    paused = !paused;
+    pauseBtn.textContent = paused ? "▶ 繼續" : "⏸ 暫停";
+    if (paused) {
+      overlayTitle.textContent = "遊戲暫停 ☁️";
+      overlayText.textContent = "按「繼續」回到遊戲";
+      overlay.classList.add("show");
+    } else overlay.classList.remove("show");
+  }
+
+  function draw() {
+    ctx.fillStyle="#edf5e8"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.strokeStyle="rgba(60,90,65,.055)";
+    for(let i=0;i<=GRID;i++){
+      ctx.beginPath(); ctx.moveTo(i*CELL,0); ctx.lineTo(i*CELL,canvas.height); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,i*CELL); ctx.lineTo(canvas.width,i*CELL); ctx.stroke();
+    }
+
+    if (food.special) {
+      ctx.fillStyle="#e5ad2f";
+      ctx.beginPath(); ctx.arc(food.x*CELL+CELL/2,food.y*CELL+CELL/2,CELL*.37,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="#fff"; ctx.font="13px sans-serif"; ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillText("★",food.x*CELL+CELL/2,food.y*CELL+CELL/2+1);
+    } else {
+      ctx.fillStyle="#ef6868";
+      ctx.beginPath(); ctx.arc(food.x*CELL+CELL/2,food.y*CELL+CELL/2,CELL*.34,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle="#57814f"; ctx.fillRect(food.x*CELL+CELL*.48,food.y*CELL+CELL*.05,2,CELL*.20);
+    }
+
+    snake.forEach((s,i)=>{
+      ctx.fillStyle=i===0 ? "#356848" : "#73a879";
+      ctx.beginPath(); ctx.roundRect(s.x*CELL+1.5,s.y*CELL+1.5,CELL-3,CELL-3,6); ctx.fill();
+    });
+    const h=snake[0];
+    ctx.fillStyle="#fff";
+    ctx.beginPath();
+    ctx.arc(h.x*CELL+CELL*.35,h.y*CELL+CELL*.35,2,0,Math.PI*2);
+    ctx.arc(h.x*CELL+CELL*.65,h.y*CELL+CELL*.35,2,0,Math.PI*2);
+    ctx.fill();
+  }
+
+  document.querySelectorAll("[data-dir]").forEach(btn => btn.addEventListener("click", () => {
+    const d=btn.dataset.dir;
+    if(d==="up") setDirection(0,-1);
+    if(d==="down") setDirection(0,1);
+    if(d==="left") setDirection(-1,0);
+    if(d==="right") setDirection(1,0);
+  }));
+
+  swipeArea.addEventListener("pointerdown", e => { startX=e.clientX; startY=e.clientY; });
+  swipeArea.addEventListener("pointerup", e => {
+    const dx=e.clientX-startX, dy=e.clientY-startY;
+    if(Math.max(Math.abs(dx),Math.abs(dy))<18) return;
+    if(Math.abs(dx)>Math.abs(dy)) setDirection(dx>0?1:-1,0);
+    else setDirection(0,dy>0?1:-1);
+  });
+
+  document.addEventListener("keydown", e => {
+    if(e.key==="ArrowUp" || e.key.toLowerCase()==="w") setDirection(0,-1);
+    if(e.key==="ArrowDown" || e.key.toLowerCase()==="s") setDirection(0,1);
+    if(e.key==="ArrowLeft" || e.key.toLowerCase()==="a") setDirection(-1,0);
+    if(e.key==="ArrowRight" || e.key.toLowerCase()==="d") setDirection(1,0);
+    if(e.code==="Space") { e.preventDefault(); togglePause(); }
+  });
+
+  pauseBtn.addEventListener("click", togglePause);
+  document.getElementById("restart").addEventListener("click", reset);
+  bestEl.textContent = best;
+  reset();
+})();
+</script>
+</body>
+</html>
